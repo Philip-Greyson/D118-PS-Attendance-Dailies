@@ -24,9 +24,11 @@ DB_CS = os.environ.get('POWERSCHOOL_SAND_DB')
 
 # Configuration
 SCHOOL_IDS = [5]  # List of school IDs to process
-HALFDAY_THRESHOLD = 2  # Number of UP codes in a single day before it counts as a half-day absence
-FULLDAY_THRESHOLD = 5  # Number of UP codes in a single day before it counts as a full-day absence
-TODAY = datetime.date.today()  # Today's date
+MT_HALFDAY_THRESHOLD = 2  # Number of UP codes in a single day on Mon-Thurs before it counts as a half-day absence
+F_HALFDAY_THRESHOLD = 1  # Number of UP codes in a single day on Friday before it counts as a half-day absence
+MT_FULLDAY_THRESHOLD = 5  # Number of UP codes in a single day on Mon-Thurs before it counts as a full-day absence
+F_FULLDAY_THRESHOLD = 5 # Number of UP codes in a single day on Friday before it counts as a full-day absence
+TODAY = datetime.date.today() # Today's date
 UNEXCUSED_PERIOD_CODE = 'UP'  # The meeting attendance code to count
 ABSENT_HALFDAY_CODE = 'UH'  # The half-day attendance code to apply for the daily attendance
 ABSENT_FULLDAY_CODE = 'UN'  # The daily attendance code to apply for the daily attendance
@@ -76,12 +78,22 @@ if __name__ == '__main__':
         print(f'Execution started at {startTime}', file=log)
 
         for school in SCHOOL_IDS:
-            print(f'INFO: Processing attendance at building {school}for {TODAY}')
+            print(f'INFO: Processing attendance at building {school} for {TODAY}')
             print(f'INFO: Processing attendance at building {school} for {TODAY}', file=log)
 
             fullday_code_id = None  # initialize variables to hold attendance code IDs for each school
             halfday_code_id = None
             calendar_day = None
+            if TODAY.weekday() == 4:  # if today is Friday
+                halfday_threshold = F_HALFDAY_THRESHOLD
+                fullday_threshold = F_FULLDAY_THRESHOLD
+                print(f'DBUG: Today is Friday, using Friday thresholds of {halfday_threshold} for half-day and {fullday_threshold} for full-day')
+                print(f'DBUG: Today is Friday, using Friday thresholds of {halfday_threshold} for half-day and {fullday_threshold} for full-day', file=log)
+            else:
+                halfday_threshold = MT_HALFDAY_THRESHOLD
+                fullday_threshold = MT_FULLDAY_THRESHOLD
+                print(f'DBUG: Today is Mon-Thurs, using Mon-Thurs thresholds of {halfday_threshold} for half-day and {fullday_threshold} for full-day')
+                print(f'DBUG: Today is Mon-Thurs, using Mon-Thurs thresholds of {halfday_threshold} for half-day and {fullday_threshold} for full-day', file=log)
 
             try:
                 with oracledb.connect(user=DB_UN, password=DB_PW, dsn=DB_CS) as con:
@@ -151,7 +163,7 @@ if __name__ == '__main__':
                                 cur.execute('SELECT att_code FROM pssis_attendance_daily WHERE studentid = :stuID AND schoolid = :school AND att_date = :today', stuID=stuID, school=school, today=TODAY)
                                 existing_daily = cur.fetchone()
                                 
-                                if HALFDAY_THRESHOLD <= absenceCount < FULLDAY_THRESHOLD:
+                                if halfday_threshold <= absenceCount < fullday_threshold:
                                     print(f'INFO: Student {stuName} with student number {stuNum} meets half day threshold with {absenceCount} unexcused period absences today')
                                     print(f'INFO: Student {stuName} with student number {stuNum} meets half day threshold with {absenceCount} unexcused period absences today', file=log)
                                     if existing_daily and not OVERRIDE_EXISTING_DAYCODE:  # if there is already a daily attendance record and we are not overriding existing codes, skip creating the half-day absence and just warn
@@ -160,7 +172,7 @@ if __name__ == '__main__':
                                     else:  # otherwise if they dont have a daily attendance record or we are overriding existing codes, create the half-day absence
                                         create_daily_attendance(ps, school, calendar_day, stuID, year_id, halfday_code_id, log)  # create the daily attendance record via API for a half day absence
 
-                                elif absenceCount >= FULLDAY_THRESHOLD:
+                                elif absenceCount >= fullday_threshold:
                                     print(f'INFO: Student {stuName} with student number {stuNum} meets full day threshold with {absenceCount} unexcused period absences today')
                                     print(f'INFO: Student {stuName} with student number {stuNum} meets full day threshold with {absenceCount} unexcused period absences today', file=log)
                                     if existing_daily and not OVERRIDE_EXISTING_DAYCODE:  # if there is already a daily attendance record and we are not overriding existing codes, skip creating the half-day absence and just warn
