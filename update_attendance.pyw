@@ -20,7 +20,7 @@ D118_API_SECRET = os.environ.get("POWERSCHOOL_API_SECRET_2")
 # Database credentials
 DB_UN = os.environ.get('POWERSCHOOL_READ_USER')
 DB_PW = os.environ.get('POWERSCHOOL_DB_PASSWORD')
-DB_CS = os.environ.get('POWERSCHOOL_SAND_DB')
+DB_CS = os.environ.get('POWERSCHOOL_PROD_DB')
 
 # Configuration
 SCHOOL_IDS = [5]  # List of school IDs to process
@@ -34,7 +34,10 @@ ABSENT_HALFDAY_CODE = 'UH'  # The half-day attendance code to apply for the dail
 ABSENT_FULLDAY_CODE = 'UN'  # The daily attendance code to apply for the daily attendance
 OVERRIDE_EXISTING_DAYCODE = False  # Whether to override existing daily attendance codes for the day
 
+DRY_RUN = True  # If True, will not make any changes, just log what would be done
+
 print(f'DBUG: DB Username: {DB_UN} | DB Password: {DB_PW} | DB Server: {DB_CS}')
+print(f'DBUG: Dry Run is set to {DRY_RUN}')
 
 def create_daily_attendance(ps, school_id, calendar_day, student_id, year_id, attendance_code_id, log):
     """Create a daily attendance record via PowerSchool API."""
@@ -100,7 +103,7 @@ if __name__ == '__main__':
                     with con.cursor() as cur:
                         print('INFO: Database connection established')
                         print('INFO: Database connection established', file=log)
-                        ps = acme_powerschool.api('d118-sandbox.info', client_id=D118_API_ID, client_secret=D118_API_SECRET)  # start the PowerSchool API session
+                        ps = acme_powerschool.api('d118-powerschool.info', client_id=D118_API_ID, client_secret=D118_API_SECRET)  # start the PowerSchool API session
                         
                         # Get the attendance code ID for our full-day absent code so we can use it to insert the daily absence later via API
                         cur.execute('SELECT ac.id, t.yearid FROM attendance_code ac LEFT JOIN terms t ON ac.yearid = t.yearid \
@@ -170,7 +173,11 @@ if __name__ == '__main__':
                                         print(f'WARN: Student {stuName} with student number {stuNum} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of half-day absence due to configuration.')
                                         print(f'WARN: Student {stuName} with student number {stuNum} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of half-day absence due to configuration.', file=log)
                                     else:  # otherwise if they dont have a daily attendance record or we are overriding existing codes, create the half-day absence
-                                        create_daily_attendance(ps, school, calendar_day, stuID, year_id, halfday_code_id, log)  # create the daily attendance record via API for a half day absence
+                                        if not DRY_RUN:
+                                            create_daily_attendance(ps, school, calendar_day, stuID, year_id, halfday_code_id, log)  # create the daily attendance record via API for a half day absence
+                                        else:
+                                            print(f'WARN: Dry run enabled, would have created half-day attendance for student {stuName} with student number {stuNum}')
+                                            print(f'WARN: Dry run enabled, would have created half-day attendance for student {stuName} with student number {stuNum}', file=log)
 
                                 elif absenceCount >= fullday_threshold:
                                     print(f'INFO: Student {stuName} with student number {stuNum} meets full day threshold with {absenceCount} unexcused period absences today')
@@ -178,8 +185,12 @@ if __name__ == '__main__':
                                     if existing_daily and not OVERRIDE_EXISTING_DAYCODE:  # if there is already a daily attendance record and we are not overriding existing codes, skip creating the half-day absence and just warn
                                         print(f'WARN: Student {stuName} with student number {stuNum} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of full-day absence due to configuration.')
                                         print(f'WARN: Student {stuName} with student number {stuNum} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of full-day absence due to configuration.', file=log)
-                                    # create the daily attendance record via API
-                                    create_daily_attendance(ps, school, calendar_day, stuID, year_id, fullday_code_id, log)
+                                    else:  # otherwise if they dont have a daily attendance record or we are overriding existing codes, create the full-day absence
+                                        if not DRY_RUN:
+                                            create_daily_attendance(ps, school, calendar_day, stuID, year_id, fullday_code_id, log)  # create the daily attendance record via API for a full day absence
+                                        else:
+                                            print(f'WARN: Dry run enabled, would have created full-day attendance for student {stuName} with student number {stuNum}')
+                                            print(f'WARN: Dry run enabled, would have created full-day attendance for student {stuName} with student number {stuNum}', file=log)
 
                         except Exception as er:
                             print(f'ERROR while querying or processing meeting attendance: {er}')
