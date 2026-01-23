@@ -34,7 +34,7 @@ ABSENT_HALFDAY_CODE = 'UH'  # The half-day attendance code to apply for the dail
 ABSENT_FULLDAY_CODE = 'UN'  # The daily attendance code to apply for the daily attendance
 OVERRIDE_EXISTING_DAYCODE = False  # Whether to override existing daily attendance codes for the day
 
-DRY_RUN = True  # If True, will not make any changes, just log what would be done
+DRY_RUN = False  # If True, will not make any changes, just log what would be done
 
 print(f'DBUG: DB Username: {DB_UN} | DB Password: {DB_PW} | DB Server: {DB_CS}')
 print(f'DBUG: Dry Run is set to {DRY_RUN}')
