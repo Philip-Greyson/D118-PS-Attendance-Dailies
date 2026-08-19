@@ -20,8 +20,8 @@ D118_API_SECRET = os.environ.get("POWERSCHOOL_API_SECRET_2")
 # Database credentials
 DB_UN = os.environ.get('POWERSCHOOL_READ_USER')
 DB_PW = os.environ.get('POWERSCHOOL_DB_PASSWORD')
-DB_CS = os.environ.get('POWERSCHOOL_RES_DB')
-API_URL = os.environ.get('POWERSCHOOL_RES_URL')
+DB_CS = os.environ.get('POWERSCHOOL_PROD_DB')
+API_URL = os.environ.get('POWERSCHOOL_PROD_URL')
 
 # Configuration
 SCHOOL_IDS = [5]  # List of school IDs to process
@@ -30,7 +30,7 @@ F_HALFDAY_THRESHOLD = 2  # Number of codes in a single day on Friday before it c
 MT_FULLDAY_THRESHOLD = 7  # Number of codes in a single day on Mon-Thurs before it counts as a full-day absence
 F_FULLDAY_THRESHOLD = 6  # Number of codes in a single day on Friday before it counts as a full-day absence
 TOTAL_PERIODS = 8  # Total number of periods in a day, used to determine if a student has other codes besides the special codes that should be in every period
-TODAY = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(days=6)  # Today's date, can change for testing purposes if needed
+TODAY = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)  # Today's date, can change for testing purposes if needed
 UNEXCUSED_PERIOD_CODES = ['UP', 'UA', 'UH', 'OSS', 'OSSH', 'CV', 'SA']  # The meeting attendance codes to count
 EXCUSED_PERIOD_CODES = ['EP', 'AB', 'HA']
 SPECIAL_ONLY_DAY_CODES = ['MH', 'HBT', 'HOS', 'DC', 'PRM', 'TR', 'TH', 'ME']  # codes that if there are even one of, it will mark the day with the same code. These are typically special attendance codes that override any other attendance for the day.
@@ -42,7 +42,7 @@ EXCUSED_ABSENCE_HALFDAY_CODE = 'HA'  # The half-day attendance code to apply for
 EXCUSED_ABSENCE_FULLDAY_CODE = 'AB'  # The daily attendance code
 OVERRIDE_EXISTING_DAYCODE = False  # Whether to override existing daily attendance codes for the day
 
-DRY_RUN = False  # If True, will not make any changes, just log what would be done
+DRY_RUN = True  # If True, will not make any changes, just log what would be done
 
 print(f'DBUG: DB Username: {DB_UN} | DB Password: {DB_PW} | DB Server: {DB_CS}')
 print(f'DBUG: Dry Run is set to {DRY_RUN}')
@@ -122,11 +122,12 @@ def get_calendar_day_id(cur: any, school_id: int) -> int:
         print(f'ERROR: Could not find calendar day ID at building {school_id} for date {TODAY}', file=log)
         exit(1)
 
-def process_elearning(codes: list, elearning_fullday_code_id: int, excused_halfday_code_id: int, calendar_day: int, year_id: int, school: int) -> None:
+def process_elearning(codes: list, elearning_fullday_code_id: int, calendar_day: int, year_id: int, school: int) -> None:
     """Process the special e-learning attendance code for students who have the PEL code.
 
-    Operates kinda in reverse of absences, they need 7 PEL codes to get the full day, and 3-6 to get an excused half day.
-    If they have less than 3 PEL codes, they get nothing. This is because the PEL code is a present code, not an absence code.
+    Operates kinda in reverse of absences, they need 6-7 PEL codes to get the full day.
+    However for 2/3-6/7 PELs, due to technically being .5 PEL and .5 UA, we still put in a full PEL and just make a note in the comment.
+    If they have less than 3 PEL codes, they get nothing. This is because the PEL code is a present code, not an absence code, and their absence will get caught by the other functions.
     """
     for meet_code in codes:
         print(f'INFO: Processing e-learning attendance for period code {meet_code} at building {school} for {TODAY}')
@@ -155,7 +156,7 @@ def process_elearning(codes: list, elearning_fullday_code_id: int, excused_halfd
                         print(f'WARN: Student {stu_name} with student number {stu_num} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of daily attendance code of {elearning_fullday_code_id} due to configuration.')
                         print(f'WARN: Student {stu_name} with student number {stu_num} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of daily attendance code of {elearning_fullday_code_id} due to configuration.', file=log)
                     else:
-                        comment_string = f"E-Learning present code auto-generated from {present_count} meeting {meet_code} codes which met the threshold of {fullday_threshold} for a full-day e-learning attendance"
+                        comment_string = f"E-Learning full-day present code auto-generated from {present_count} meeting {meet_code} codes which met the threshold of {fullday_threshold} for a full-day e-learning attendance"
                         if not DRY_RUN:
                             create_daily_attendance(ps, school, calendar_day, stu_id, year_id, elearning_fullday_code_id, comment_string, log)  # create the daily attendance record via API for a full day e-learning attendance
                         else:
@@ -168,7 +169,7 @@ def process_elearning(codes: list, elearning_fullday_code_id: int, excused_halfd
                     else:
                         comment_string = f"E-Learning half-day code auto-generated from {present_count} meeting {meet_code} codes which met the threshold of {halfday_threshold} for a half-day e-learning attendance"
                         if not DRY_RUN:
-                            create_daily_attendance(ps, school, calendar_day, stu_id, year_id, excused_halfday_code_id, comment_string, log)  # create the daily attendance record via API for a half day e-learning attendance
+                            create_daily_attendance(ps, school, calendar_day, stu_id, year_id, elearning_fullday_code_id, comment_string, log)  # create the daily attendance record via API for a half day e-learning attendance
                         else:
                             print(f'WARN: Dry run enabled, would have created half-day e-learning attendance for student {stu_name} with student number {stu_num}')
                             print(f'WARN: Dry run enabled, would have created half-day e-learning attendance for student {stu_name} with student number {stu_num}', file=log)
@@ -352,7 +353,7 @@ if __name__ == '__main__':
                         calendar_day = get_calendar_day_id(cur, school)
 
                         # process e-learning attendance for this school first, since those codes should go in first on e-learning days
-                        process_elearning(ELEARNING_PERIOD_CODES, elearning_fullday_code_id, excused_halfday_code_id, calendar_day, year_id, school)
+                        process_elearning(ELEARNING_PERIOD_CODES, elearning_fullday_code_id, calendar_day, year_id, school)
 
                         # process special codes that should be in every period, so if there is even one, mark the day code as the same code
                         process_special_day_codes(SPECIAL_ONLY_DAY_CODES, calendar_day, year_id, school)
@@ -362,7 +363,6 @@ if __name__ == '__main__':
 
                         # process excused absences for this school
                         process_absences("excused", EXCUSED_PERIOD_CODES, excused_fullday_code_id, excused_halfday_code_id, calendar_day, year_id, school)
-
 
             except Exception as er:
                 print(f'ERROR while connecting to database: {er}')
