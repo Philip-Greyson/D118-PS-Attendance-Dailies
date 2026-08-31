@@ -31,15 +31,19 @@ MT_FULLDAY_THRESHOLD = 7  # Number of codes in a single day on Mon-Thurs before 
 F_FULLDAY_THRESHOLD = 6  # Number of codes in a single day on Friday before it counts as a full-day absence
 TOTAL_PERIODS = 8  # Total number of periods in a day, used to determine if a student has other codes besides the special codes that should be in every period
 TODAY = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)  # Today's date, can change for testing purposes if needed
-UNEXCUSED_PERIOD_CODES = ['UP', 'UA', 'UH', 'OSS', 'OSSH', 'CV', 'SA']  # The meeting attendance codes to count
-EXCUSED_PERIOD_CODES = ['EP', 'AB', 'HA']
+UNEXCUSED_PERIOD_CODES = ['UP', 'UA', 'UH', 'SA']  # The meeting attendance codes to count as unexcused
+EXCUSED_PERIOD_CODES = ['EP', 'AB', 'HA', 'CV']  # the meeting attendance codes to count as excused
+SUSPENDED_PERIOD_CODES = ['OSS', 'OSSH']  # meeting attendance codes to count as suspensions
 SPECIAL_ONLY_DAY_CODES = ['MH', 'HBT', 'HOS', 'DC', 'PRM', 'TR', 'TH', 'ME']  # codes that if there are even one of, it will mark the day with the same code. These are typically special attendance codes that override any other attendance for the day.
 ELEARNING_PERIOD_CODES = ['PEL']  # weird ones where get the PEL code if they are present all day but an excused half day if they have less than the full day threshold
+
 ELEARNING_FULLDAY_PRESENT_CODE = 'PEL'  # The daily attendance code to apply for the daily attendance for a full day e-learning attendance
 UNEXCUSED_ABSENCE_HALFDAY_CODE = 'UH'  # The half-day attendance code to apply for the daily attendance for an unexcused half day
 UNEXCUSED_ABSENCE_FULLDAY_CODE = 'UA'  # The daily attendance code to apply for the daily attendance for an unexcused day
 EXCUSED_ABSENCE_HALFDAY_CODE = 'HA'  # The half-day attendance code to apply for the daily attendance for an excused half day
 EXCUSED_ABSENCE_FULLDAY_CODE = 'AB'  # The daily attendance code
+SUSPENDED_ABSENCE_HALFDAY_CODE = 'OSSH'  # the attendance code to apply for a half day suspension
+SUSPENDED_ABSENCE_FULLDAY_CODE = 'OSS'  # the attendance code to apply for a full day suspension
 OVERRIDE_EXISTING_DAYCODE = False  # Whether to override existing daily attendance codes for the day
 
 DRY_RUN = True  # If True, will not make any changes, just log what would be done
@@ -271,7 +275,7 @@ def process_absences(abs_type: str, codes: list, fullday_code_id: int, halfday_c
             print(f'ERROR while querying or processing meeting attendance for code {abs_code}: {er}')
             print(f'ERROR while querying or processing meeting attendance for code {abs_code}: {er}', file=log)
 
-    # now go through each student that we had unexcused absences for and process the daily code
+    # now go through each student that we had absences for and process the daily code
     for stu_num, absence_count in student_absences.items():
         stu_name = student_info[stu_num]['name']
         stu_id = student_info[stu_num]['id']
@@ -345,6 +349,8 @@ if __name__ == '__main__':
                         excused_fullday_code_id = get_attendance_code_id(cur, school, EXCUSED_ABSENCE_FULLDAY_CODE)
                         excused_halfday_code_id = get_attendance_code_id(cur, school, EXCUSED_ABSENCE_HALFDAY_CODE)
                         elearning_fullday_code_id = get_attendance_code_id(cur, school, ELEARNING_FULLDAY_PRESENT_CODE)
+                        suspension_fullday_code_id = get_attendance_code_id(cur, school, SUSPENDED_ABSENCE_FULLDAY_CODE)
+                        suspension_halfday_code_id = get_attendance_code_id(cur, school, SUSPENDED_ABSENCE_HALFDAY_CODE)
 
                         # get the current year ID for this school so we can use it to insert the daily absence later via API
                         year_id = get_year_id(cur, school)
@@ -357,6 +363,9 @@ if __name__ == '__main__':
 
                         # process special codes that should be in every period, so if there is even one, mark the day code as the same code
                         process_special_day_codes(SPECIAL_ONLY_DAY_CODES, calendar_day, year_id, school)
+
+                        # process suspensions for this school
+                        process_absences("suspension", SUSPENDED_PERIOD_CODES, suspension_fullday_code_id, suspension_halfday_code_id, calendar_day, year_id, school)
 
                         # process unexcused absences for this school
                         process_absences("unexcused", UNEXCUSED_PERIOD_CODES, unexcused_fullday_code_id, unexcused_halfday_code_id, calendar_day, year_id, school)
