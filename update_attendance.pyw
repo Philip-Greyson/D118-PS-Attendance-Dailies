@@ -33,7 +33,8 @@ MT_HALFDAY_THRESHOLD = 3  # Number of codes in a single day on Mon-Thurs before 
 F_HALFDAY_THRESHOLD = 2  # Number of codes in a single day on Friday before it counts as a half-day absence
 MT_FULLDAY_THRESHOLD = 7  # Number of codes in a single day on Mon-Thurs before it counts as a full-day absence
 F_FULLDAY_THRESHOLD = 6  # Number of codes in a single day on Friday before it counts as a full-day absence
-TOTAL_PERIODS = 8  # Total number of periods in a day, used to determine if a student has other codes besides the special codes that should be in every period
+TOTAL_PERIODS = 8  # Total number of periods in a day, used as a fallback for the special day code coverage check when a student's actual scheduled period count cannot be determined
+
 NUM_DAYS_BACK = 7  # How many days prior to today to also reprocess on every run, in addition to today itself (e.g. 7 means today plus the 7 days before it = 8 total days processed)
 SCRIPT_RUN_DATE = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)  # The real-world date this script is actually executed, used to anchor the day-lookback loop below and to timestamp any changes in updates
 TODAY = SCRIPT_RUN_DATE  # The date currently being processed. This gets reassigned every pass through the day-lookback loop in __main__ below, so treat it as a moving pointer rather than a true constant, even though the rest of the functions in this file read it as a plain global
@@ -139,6 +140,47 @@ def get_calendar_day_id(cur: any, school_id: int) -> int | None:
         print(f'ERROR: Could not find calendar day ID at building {school_id} for date {TODAY}', file=log)
         return None
 
+def get_cycle_day_letter(cur: any, school_id: int) -> str | None:
+    """Get the cycle day letter for the current TODAY date at a given school, used to determine which of a student's sections actually meet on this date."""
+    # calendar_day stores which cycle day each date falls on, and section_meeting stores which cycle day letter each section meets on, so this is the link between a date and a student's meeting sections
+    cur.execute('SELECT cyd.letter FROM calendar_day cd LEFT JOIN cycle_day cyd ON cd.cycle_day_id = cyd.id \
+                WHERE cd.schoolid = :school AND cd.date_value = :today', school=school_id, today=TODAY)
+    result = cur.fetchone()
+    if result is not None and result[0] is not None:
+        print(f'DBUG: Found cycle day letter {result[0]} for building {school_id} on {TODAY}')
+        print(f'DBUG: Found cycle day letter {result[0]} for building {school_id} on {TODAY}', file=log)
+        return result[0]
+    else:
+        print(f'ERROR: Could not find a cycle day letter for building {school_id} on {TODAY}, the special day code coverage check will fall back to the TOTAL_PERIODS constant')
+        print(f'ERROR: Could not find a cycle day letter for building {school_id} on {TODAY}, the special day code coverage check will fall back to the TOTAL_PERIODS constant', file=log)
+        return None
+
+def get_student_scheduled_period_count(cur: any, student_id: int, school_id: int, cycle_day_letter: str, exclude_ada: bool) -> int | None:
+    """Get how many distinct attendance-taking periods a student is actually scheduled for on the current TODAY date, so students with partial schedules aren't compared against a full-day period count."""
+    try:
+        # count distinct period numbers rather than sections, since a student double-scheduled into one period should still only count that period once
+        # the exclude_ada condition is added conditionally below so the EXCLUDE_NON_ADA_SECTIONS constant can turn it off without needing two copies of this query
+        query = 'SELECT COUNT(DISTINCT sm.period_number) FROM cc \
+                INNER JOIN section_meeting sm ON cc.sectionid = sm.sectionid \
+                INNER JOIN sections s ON cc.sectionid = s.id \
+                WHERE cc.studentid = :stuid AND cc.schoolid = :school AND sm.cycle_day_letter = :cycleletter \
+                AND :today BETWEEN cc.dateenrolled AND cc.dateleft'
+        if exclude_ada:  # leave out sections flagged as not counting toward ADA/ADM (study halls and similar) which would otherwise inflate the expected period count
+            query = f'{query} AND s.exclude_ada = 0'
+
+        cur.execute(query, stuid=student_id, school=school_id, cycleletter=cycle_day_letter, today=TODAY)
+        result = cur.fetchone()
+        if result is not None and result[0] > 0:
+            return result[0]
+        else:  # a student with no scheduled sections at all on this date, which is unusual enough to be worth logging
+            print(f'WARN: Student ID {student_id} has no scheduled attendance-taking periods at building {school_id} on {TODAY}')
+            print(f'WARN: Student ID {student_id} has no scheduled attendance-taking periods at building {school_id} on {TODAY}', file=log)
+            return None
+    except Exception as er:
+        print(f'ERROR while counting scheduled periods for student ID {student_id}: {er}')
+        print(f'ERROR while counting scheduled periods for student ID {student_id}: {er}', file=log)
+        return None
+
 def process_elearning(codes: list, elearning_fullday_code_id: int, calendar_day: int, year_id: int, school: int) -> None:
     """Process the special e-learning attendance code for students who have the PEL code.
 
@@ -175,7 +217,7 @@ def process_elearning(codes: list, elearning_fullday_code_id: int, calendar_day:
                         print(f'WARN: Student {stu_name} with student number {stu_num} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of daily attendance code of {ELEARNING_FULLDAY_PRESENT_CODE} due to configuration of OVERRIDE_EXISTING_DAYCODE being {OVERRIDE_EXISTING_DAYCODE}.', file=log)
                     else:
                         if existing_daily and existing_daily[0] is not None:  # note what the code is changing from and when the correction was made
-                            comment_string = f"E-Learning full-day present code auto-generated from {present_count} meeting {meet_code} codes which met the threshold of {fullday_threshold} for a full-day e-learning attendance, changed from previous code {existing_daily[0]} by an admin override run on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}"
+                            comment_string = f"E-Learning full-day present code auto-generated from {present_count} meeting {meet_code} codes which met the threshold of {fullday_threshold} for a full-day e-learning attendance, changed from previous code {existing_daily[0]} by attendance script override run on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}"
                         else:
                             comment_string = f"E-Learning full-day present code auto-generated from {present_count} meeting {meet_code} codes which met the threshold of {fullday_threshold} for a full-day e-learning attendance"
                         if not DRY_RUN:
@@ -192,7 +234,7 @@ def process_elearning(codes: list, elearning_fullday_code_id: int, calendar_day:
                         print(f'WARN: Student {stu_name} with student number {stu_num} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of daily attendance code of {ELEARNING_FULLDAY_PRESENT_CODE} due to configuration of OVERRIDE_EXISTING_DAYCODE being {OVERRIDE_EXISTING_DAYCODE}.', file=log)
                     else:
                         if existing_daily and existing_daily[0] is not None:
-                            comment_string = f"E-Learning half-day code auto-generated from {present_count} meeting {meet_code} codes which met the threshold of {halfday_threshold} for a half-day e-learning attendance, changed from previous code {existing_daily[0]} by an admin override run on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}"
+                            comment_string = f"E-Learning half-day code auto-generated from {present_count} meeting {meet_code} codes which met the threshold of {halfday_threshold} for a half-day e-learning attendance, changed from previous code {existing_daily[0]} by attendance script override run on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}"
                         else:
                             comment_string = f"E-Learning half-day code auto-generated from {present_count} meeting {meet_code} codes which met the threshold of {halfday_threshold} for a half-day e-learning attendance"
                         if not DRY_RUN:
@@ -211,6 +253,8 @@ def process_special_day_codes(codes: list, calendar_day: int, year_id: int, scho
     """
     student_other_codes = {}  # Dictionary to hold student IDs and their other codes so we can log them if they have any other codes besides the special code
     threshold_students = set()  # Set of studentids who had at least one occurrence of any special code today - a single occurrence is this code's "threshold"
+    cycle_day_letter = get_cycle_day_letter(cur, school)  # look up once per building/day, since every student at this building shares the same cycle day
+    student_period_counts = {}  # cache of studentid : scheduled period count, since a student can appear under more than one special code and we dont want to re-query their schedule each time
     for special_code in codes:
         print(f'INFO: Processing special attendance code {special_code} at building {school} for {TODAY}')
         print(f'INFO: Processing special attendance code {special_code} at building {school} for {TODAY}', file=log)
@@ -236,15 +280,28 @@ def process_special_day_codes(codes: list, calendar_day: int, year_id: int, scho
                 print(f'DBUG: Student {stu_name} with student number {stu_num} has a {absence_count} occurrence(s) of special attendance code {special_code} today')
                 print(f'DBUG: Student {stu_name} with student number {stu_num} has a {absence_count} occurrence(s) of special attendance code {special_code} today', file=log)
 
-                if absence_count < TOTAL_PERIODS:  # if they have less than the total number of periods occurrences of the special code, check to see if they have any other codes for today and log them
+                # figure out how many periods this student is actually scheduled for, since some students may have fewer than a full day of classes and shouldn't be flagged for that alone
+                if stu_id not in student_period_counts:  # only look up each student's schedule once per building/day, no matter how many special codes they turn up under
+                    student_period_counts[stu_id] = get_student_scheduled_period_count(cur, stu_id, school, cycle_day_letter, True) if cycle_day_letter else None
+                expected_periods = student_period_counts[stu_id] if student_period_counts[stu_id] else TOTAL_PERIODS  # fall back to the building-wide period count if the schedule lookup failed or returned nothing
+
+                if absence_count < expected_periods:  # the special code doesn't cover their whole day, which shouldn't happen since these codes are meant to apply to every period
+                    print(f'WARN: Student {stu_name} with student number {stu_num} has only {absence_count} of their {expected_periods} scheduled periods marked with special code {special_code}')
+                    print(f'WARN: Student {stu_name} with student number {stu_num} has only {absence_count} of their {expected_periods} scheduled periods marked with special code {special_code}', file=log)
+
+                    # look for any other meeting codes they have today, since those explain what the uncovered periods were marked as
                     cur.execute('SELECT att_code, count(*) as count FROM pssis_attendance_meeting \
                                 WHERE studentid = :stuID AND schoolid = :school AND att_date = :today AND att_code != :code \
                                 GROUP BY att_code', stuID=stu_id, school=school, today=TODAY, code=special_code)
                     other_codes = cur.fetchall()
                     if other_codes:
                         student_other_codes[stu_num] = {'name': stu_name, 'id': stu_id, 'main_code': special_code, 'other_codes': other_codes}
-                        print(f'WARN: Student {stu_name} with student number {stu_num} has other attendance codes for today besides the special code {special_code}: {other_codes}')
-                        print(f'WARN: Student {stu_name} with student number {stu_num} has other attendance codes for today besides the special code {special_code}: {other_codes}', file=log)
+                        print(f'ERROR: Student {stu_name} with student number {stu_num} has other attendance codes for today besides the special code {special_code}: {other_codes}')
+                        print(f'ERROR: Student {stu_name} with student number {stu_num} has other attendance codes for today besides the special code {special_code}: {other_codes}', file=log)
+                    else:  # no other codes at all, so the remaining periods simply had no attendance recorded rather than conflicting codes
+                        print(f'WARN: Student {stu_name} with student number {stu_num} has no other meeting codes today, so {expected_periods - absence_count} period(s) had no attendance recorded at all')
+                        print(f'WARN: Student {stu_name} with student number {stu_num} has no other meeting codes today, so {expected_periods - absence_count} period(s) had no attendance recorded at all', file=log)
+
                 # check to see if there is already a daily attendance record for this student for today
                 cur.execute('SELECT att_code FROM pssis_attendance_daily WHERE studentid = :stuID AND schoolid = :school AND att_date = :today', stuID=stu_id, school=school, today=TODAY)
                 existing_daily = cur.fetchone()
@@ -257,7 +314,7 @@ def process_special_day_codes(codes: list, calendar_day: int, year_id: int, scho
                     print(f'WARN: Student {stu_name} with student number {stu_num} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of daily attendance code of {special_code} due to configuration of OVERRIDE_EXISTING_DAYCODE being {OVERRIDE_EXISTING_DAYCODE}.', file=log)
                 else:  # either no existing code, or a different one we're allowed to override
                     if existing_daily and existing_daily[0] is not None:  # note what the code is changing from and when the correction was made
-                        comment_string = f"Auto-generated from presence of meeting code {special_code} which overrides any other attendance meeting codes for the day, changed from previous code {existing_daily[0]} by an admin override run on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}"
+                        comment_string = f"Auto-generated from presence of meeting code {special_code} which overrides any other attendance meeting codes for the day, changed from previous code {existing_daily[0]} by attendance script override run on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}"
                     else:
                         comment_string = f"Auto-generated from presence of meeting code {special_code} which overrides any other attendance meeting codes for the day"
                     if not DRY_RUN:
@@ -333,7 +390,7 @@ def process_absences(abs_type: str, codes: list, fullday_code_id: int, halfday_c
                 print(f'WARN: Student {stu_name} with student number {stu_num} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of half-day {abs_type} absence due to configuration of OVERRIDE_EXISTING_DAYCODE being {OVERRIDE_EXISTING_DAYCODE}.', file=log)
             else:  # either no existing code, or a different one we're allowed to override
                 if existing_daily and existing_daily[0] is not None:  # note what the code is changing from and when the correction was made
-                    comment_string = f"Auto-generated from {absence_count} meeting {abs_type} codes which met the threshold of {halfday_threshold} for a half-day {abs_type} absence, changed from previous code {existing_daily[0]} by an admin override run on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}"
+                    comment_string = f"Auto-generated from {absence_count} meeting {abs_type} codes which met the threshold of {halfday_threshold} for a half-day {abs_type} absence, changed from previous code {existing_daily[0]} by attendance script override run on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}"
                 else:
                     comment_string = f"Auto-generated from {absence_count} meeting {abs_type} codes which met the threshold of {halfday_threshold} for a half-day {abs_type} absence"
                 if not DRY_RUN:
@@ -354,7 +411,7 @@ def process_absences(abs_type: str, codes: list, fullday_code_id: int, halfday_c
                 print(f'WARN: Student {stu_name} with student number {stu_num} already has a daily attendance record for today with code {existing_daily[0]}. Skipping creation of full-day {abs_type} absence due to configuration of OVERRIDE_EXISTING_DAYCODE being {OVERRIDE_EXISTING_DAYCODE}.', file=log)
             else:  # either no existing code, or a different one we're allowed to override
                 if existing_daily and existing_daily[0] is not None:  # note what the code is changing from and when the correction was made
-                    comment_string = f"Auto-generated from {absence_count} meeting {abs_type} codes which met the threshold of {fullday_threshold} for a full-day {abs_type} absence, changed from previous code {existing_daily[0]} by an admin override run on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}"
+                    comment_string = f"Auto-generated from {absence_count} meeting {abs_type} codes which met the threshold of {fullday_threshold} for a full-day {abs_type} absence, changed from previous code {existing_daily[0]} by attendance script override run on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}"
                 else:
                     comment_string = f"Auto-generated from {absence_count} meeting {abs_type} codes which met the threshold of {fullday_threshold} for a full-day {abs_type} absence"
                 if not DRY_RUN:
@@ -362,7 +419,6 @@ def process_absences(abs_type: str, codes: list, fullday_code_id: int, halfday_c
                 else:
                     print(f'WARN: Dry run enabled, would have created/updated full-day {abs_type} attendance for student {stu_name} with student number {stu_num}. Comment string: {comment_string}')
                     print(f'WARN: Dry run enabled, would have created/updated full-day {abs_type} attendance for student {stu_name} with student number {stu_num}. Comment string: {comment_string}', file=log)
-
     return threshold_students
 
 def process_present_overrides(threshold_students: set[int], override_code_id: int, calendar_day: int, year_id: int, school: int) -> None:
@@ -388,14 +444,18 @@ def process_present_overrides(threshold_students: set[int], override_code_id: in
             existing_code = row[3]
 
             if stu_id not in threshold_students:  # this student has one of the managed codes but no longer meets any threshold that would justify it, needs correcting back to present
-                print(f'INFO: Student {stu_name} with student number {stu_num} has code {existing_code} but no longer meets any threshold, correcting to {ADMIN_PRESENT_OVERRIDE_CODE}')
-                print(f'INFO: Student {stu_name} with student number {stu_num} has code {existing_code} but no longer meets any threshold, correcting to {ADMIN_PRESENT_OVERRIDE_CODE}', file=log)
-                comment_string = f"Auto-corrected by admin override pass on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}, previous code of {existing_code} no longer meets any absence threshold for {TODAY.strftime('%Y-%m-%d')}"
-                if not DRY_RUN:
-                    create_daily_attendance(ps, school, calendar_day, stu_id, year_id, override_code_id, comment_string, log)
+                if existing_code == ADMIN_PRESENT_OVERRIDE_CODE:  # already has the present override code, no need to do anything
+                    print(f'DBUG: Student {stu_name} with student number {stu_num} already has the present override code of {ADMIN_PRESENT_OVERRIDE_CODE}, skipping update')
+                    print(f'DBUG: Student {stu_name} with student number {stu_num} already has the present override code of {ADMIN_PRESENT_OVERRIDE_CODE}, skipping update', file=log)
                 else:
-                    print(f'WARN: Dry run enabled, would have corrected student {stu_name} with student number {stu_num} from {existing_code} to {ADMIN_PRESENT_OVERRIDE_CODE}. Comment string: {comment_string}')
-                    print(f'WARN: Dry run enabled, would have corrected student {stu_name} with student number {stu_num} from {existing_code} to {ADMIN_PRESENT_OVERRIDE_CODE}. Comment string: {comment_string}', file=log)
+                    print(f'INFO: Student {stu_name} with student number {stu_num} has code {existing_code} but no longer meets any threshold, correcting to {ADMIN_PRESENT_OVERRIDE_CODE}')
+                    print(f'INFO: Student {stu_name} with student number {stu_num} has code {existing_code} but no longer meets any threshold, correcting to {ADMIN_PRESENT_OVERRIDE_CODE}', file=log)
+                    comment_string = f"Auto-corrected by attendance script override pass on {SCRIPT_RUN_DATE.strftime('%Y-%m-%d')}, previous code of {existing_code} no longer meets any absence threshold for {TODAY.strftime('%Y-%m-%d')}"
+                    if not DRY_RUN:
+                        create_daily_attendance(ps, school, calendar_day, stu_id, year_id, override_code_id, comment_string, log)
+                    else:
+                        print(f'WARN: Dry run enabled, would have corrected student {stu_name} with student number {stu_num} from {existing_code} to {ADMIN_PRESENT_OVERRIDE_CODE}. Comment string: {comment_string}')
+                        print(f'WARN: Dry run enabled, would have corrected student {stu_name} with student number {stu_num} from {existing_code} to {ADMIN_PRESENT_OVERRIDE_CODE}. Comment string: {comment_string}', file=log)
     except Exception as er:
         print(f'ERROR while processing admin overrides for building {school} for {TODAY}: {er}')
         print(f'ERROR while processing admin overrides for building {school} for {TODAY}: {er}', file=log)
@@ -451,6 +511,7 @@ if __name__ == '__main__':
                                     continue
 
                                 year_id = get_year_id(cur, school)
+
                                 if year_id is None:
                                     print(f'ERROR: No active school year found for building {school} on {TODAY}, skipping')
                                     print(f'ERROR: No active school year found for building {school} on {TODAY}, skipping', file=log)
